@@ -10,3 +10,6 @@ else
     end
 end
 # <<< conda initialize <<<
+
+# Always activate base
+conda activate base
