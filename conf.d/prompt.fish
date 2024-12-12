@@ -22,10 +22,10 @@ if set -q TMUX
         # Print the prompt
         if test $return_value -ne 0
             set_color red
-            echo -n "[$return_value]"
+            echo -n "[$return_value] "
         end
             
         set_color cyan
-        echo -n " > "
+        echo -n "> "
     end
 end
