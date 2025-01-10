@@ -12,4 +12,6 @@ end
 # <<< conda initialize <<<
 
 # Always activate base
-conda activate base
+if type -q conda
+  conda activate base
+end

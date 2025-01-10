@@ -1,5 +1,7 @@
 # 1Password completion
-op completion fish | source
+if type -q op
+  op completion fish | source
+end
 
 # 1Password SSH Agent
 if test -z "$SSH_TTY"
