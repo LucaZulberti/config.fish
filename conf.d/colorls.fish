@@ -8,6 +8,7 @@ alias ll="colorls --dark -lA --sd"
 alias lf="colorls --dark -f"
 alias ld="colorls --dark -d"
 alias lt="colorls --dark -lAt"
+alias lg="colorls --dark -lA --sd --gs"
 
 function tree
     # Parse arguments
