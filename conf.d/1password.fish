@@ -4,6 +4,9 @@ if type -q op
 end
 
 # 1Password SSH Agent
-if test -z "$SSH_TTY"
-  set -x SSH_AUTH_SOCK ~/.1password/agent.sock
+if not set -q SSH_AUTH_SOCK
+  ln -sf ~/.1password/agent.sock ~/.agent.sock
+  set -x SSH_AUTH_SOCK ~/.agent.sock
+else
+  ln -sf "$SSH_AUTH_SOCK" ~/.agent.sock
 end
