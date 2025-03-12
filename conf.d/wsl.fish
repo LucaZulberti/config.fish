@@ -8,9 +8,8 @@ if test -d /mnt/c/Users
 
   # Copy .ssh from Windows link, if present
   if test -s ~/.ssh_win
-    rm -rf ~/.ssh
-    cp -rL ~/.ssh_win ~/.ssh
+    rm -rf ~/.ssh/*
+    cp -rL ~/.ssh_win/* ~/.ssh
     chmod -R 600 ~/.ssh/*
-    chmod    700 ~/.ssh
   end
 end
