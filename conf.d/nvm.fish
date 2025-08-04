@@ -1,6 +1,6 @@
-set --query nvm_mirror || set --global nvm_mirror https://nodejs.org/dist
 set --query XDG_DATA_HOME || set --local XDG_DATA_HOME ~/.local/share
-set --global nvm_data $XDG_DATA_HOME/nvm
+set --query nvm_mirror || set --global nvm_mirror https://nodejs.org/dist
+set --query nvm_data || set --global nvm_data $XDG_DATA_HOME/nvm
 
 function _nvm_install --on-event nvm_install
     test ! -d $nvm_data && command mkdir -p $nvm_data
@@ -24,7 +24,5 @@ function _nvm_uninstall --on-event nvm_uninstall
 end
 
 if status is-interactive && set --query nvm_default_version && ! set --query nvm_current_version
-    if nvm ls $nvm_default_version > /dev/null 2>&1
-        nvm use --silent $nvm_default_version
-    end
+    nvm use --silent $nvm_default_version
 end
