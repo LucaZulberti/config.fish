@@ -1,0 +1,7 @@
+alias gs="git status"
+alias gl="git log --all"
+alias gt="git log --all --oneline --graph"
+alias gp="git push"
+alias gP="git pull -p"
+alias gf="git fetch -p --all"
+alias gr="git rebase -i"
