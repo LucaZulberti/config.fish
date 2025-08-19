@@ -1,3 +1,3 @@
-if test -f "~/.local/share/bob/env/env.fish"
-    source "~/.local/share/bob/env/env.fish"
+if test -f "$HOME/.local/share/bob/env/env.fish"
+    source "$HOME/.local/share/bob/env/env.fish"
 end
