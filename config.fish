@@ -6,4 +6,3 @@ if status is-interactive
         set -x TZ (readlink /etc/localtime | sed 's|.*/zoneinfo/||')
     end
 end
-

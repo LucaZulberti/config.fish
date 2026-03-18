@@ -10,8 +10,3 @@ else
     end
 end
 # <<< conda initialize <<<
-
-# Always activate base
-if type -q conda
-    conda activate base
-end
