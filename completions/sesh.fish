@@ -1,0 +1,1 @@
+eval "$(sesh completion fish)"
