@@ -1,5 +1,6 @@
 if type -q git
     alias gs="git status"
+    alias gd="git diff"
     alias gl="git log --all"
     alias gt="git log --all --oneline --graph"
     alias gp="git push"
