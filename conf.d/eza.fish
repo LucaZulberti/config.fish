@@ -1,4 +1,3 @@
-# Colorls installed with Ruby: gem install colorls
 if type -q eza
 
     # Use eza with fish shell
