@@ -1,6 +1,4 @@
 if type -q eza
-
-    # Use eza with fish shell
     alias ls="eza --icons"
     alias l="ls -1"
     alias la="ls -a"
