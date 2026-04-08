@@ -1,1 +1,3 @@
-eval "$(bat --completion fish)"
+if type -q bat
+    bat --completion fish | source
+end

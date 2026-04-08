@@ -1,1 +1,3 @@
-eval "$(sesh completion fish)"
+if type -q sesh
+    sesh completion fish | source
+end
