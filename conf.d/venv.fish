@@ -1,5 +1,5 @@
-if ! test -d ~/miniconda3
-    if test -d ~/.venv/work
-        source ~/.venv/work/bin/activate.fish
+if ! test -d $HOME/miniconda3
+    if test -d $HOME/.venv/work
+        source $HOME/.venv/work/bin/activate.fish
     end
 end

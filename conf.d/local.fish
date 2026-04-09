@@ -1,3 +1,3 @@
-if test -d ~/.local/bin
-    set -gx PATH ~/.local/bin $PATH
+if test -d $HOME/.local/bin
+    set -gx PATH $HOME/.local/bin $PATH
 end

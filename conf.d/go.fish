@@ -1,3 +1,3 @@
-if test -d ~/go/bin
-    set -gx PATH ~/go/bin $PATH
+if test -d $HOME/go/bin
+    set -gx PATH $HOME/go/bin $PATH
 end
