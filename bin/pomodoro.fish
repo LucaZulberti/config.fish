@@ -48,6 +48,10 @@ function __pomodoro_overlay_logfile --description 'Return the log file path used
     echo (__pomodoro_state_dir)/overlay.log
 end
 
+function __pomodoro_overlay_template_path --description 'Return the PowerShell overlay template path'
+    echo ~/.config/fish/lib/pomodoro-overlay-wsl-template.ps1
+end
+
 function __pomodoro_write_state --description 'Atomically rewrite the session state file'
     set -l run_state_name $argv[1]
     set -l mode_name $argv[2]
@@ -131,13 +135,19 @@ function __pomodoro_escape_for_powershell_double_quoted --description 'Escape te
     echo "$text"
 end
 
-function __pomodoro_notify_overlay_wsl --description 'Show a fullscreen Windows WPF overlay from WSL using a temporary .ps1 script'
+function __pomodoro_notify_overlay_wsl --description 'Render the overlay PowerShell template and execute it on Windows'
     set -l title $argv[1]
     set -l msg $argv[2]
 
     set -l ps (__pomodoro_find_windows_command powershell.exe)
     if test -z "$ps"
-        echo "warning: WSL overlay skipped: powershell.exe not found" >&2
+        echo "warning: WSL multi-screen overlay skipped: powershell.exe not found" >&2
+        return 1
+    end
+
+    set -l template (__pomodoro_overlay_template_path)
+    if not test -f "$template"
+        echo "warning: WSL overlay template not found: $template" >&2
         return 1
     end
 
@@ -148,150 +158,24 @@ function __pomodoro_notify_overlay_wsl --description 'Show a fullscreen Windows 
     set -l ps_title (__pomodoro_escape_for_powershell_double_quoted "$title")
     set -l ps_msg (__pomodoro_escape_for_powershell_double_quoted "$msg")
 
-    set -l ps1 (mktemp "$state_dir/overlay.XXXXXX.ps1")
+    set -l letters A B C D E F G H I J K L M N O P Q R S T U V W X Y Z
+    set -l dismiss_key $letters[(random 1 (count $letters))]
 
-    set -l ps_lines \
-        "\$ErrorActionPreference = 'Stop'" \
-        "" \
-        "try {" \
-        "    Add-Type -AssemblyName PresentationCore,PresentationFramework,WindowsBase" \
-        "" \
-        "    \$window = New-Object System.Windows.Window" \
-        "    \$window.Title = 'PomodoroOverlay'" \
-        "    \$window.WindowStyle = 'None'" \
-        "    \$window.ResizeMode = 'NoResize'" \
-        "    \$window.WindowState = 'Maximized'" \
-        "    \$window.Topmost = \$true" \
-        "    \$window.ShowInTaskbar = \$false" \
-        "    \$window.ShowActivated = \$true" \
-        "    \$window.AllowsTransparency = \$true" \
-        "    \$window.Focusable = \$true" \
-        "    \$window.Background = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.Color]::FromArgb(235,0,0,0))" \
-        "" \
-        "    \$grid = New-Object System.Windows.Controls.Grid" \
-        "    \$grid.Focusable = \$true" \
-        "" \
-        "    \$stack = New-Object System.Windows.Controls.StackPanel" \
-        "    \$stack.HorizontalAlignment = 'Center'" \
-        "    \$stack.VerticalAlignment = 'Center'" \
-        "    \$stack.MaxWidth = 1200" \
-        "" \
-        "    \$icon = New-Object System.Windows.Controls.TextBlock" \
-        "    \$icon.Text = [System.Char]::ConvertFromUtf32(0x1F345)" \
-        "    \$icon.FontSize = 104" \
-        "    \$icon.HorizontalAlignment = 'Center'" \
-        "    \$icon.Foreground = [System.Windows.Media.Brushes]::Tomato" \
-        "    \$icon.Margin = '0,0,0,24'" \
-        "" \
-        "    \$tb1 = New-Object System.Windows.Controls.TextBlock" \
-        "    \$tb1.Text = '__TITLE__'" \
-        "    \$tb1.FontSize = 44" \
-        "    \$tb1.FontWeight = 'Bold'" \
-        "    \$tb1.HorizontalAlignment = 'Center'" \
-        "    \$tb1.Foreground = [System.Windows.Media.Brushes]::White" \
-        "    \$tb1.Margin = '0,0,0,12'" \
-        "" \
-        "    \$tb2 = New-Object System.Windows.Controls.TextBlock" \
-        "    \$tb2.Text = '__MSG__'" \
-        "    \$tb2.FontSize = 28" \
-        "    \$tb2.TextWrapping = 'Wrap'" \
-        "    \$tb2.TextAlignment = 'Center'" \
-        "    \$tb2.HorizontalAlignment = 'Center'" \
-        "    \$tb2.Foreground = [System.Windows.Media.Brushes]::White" \
-        "    \$tb2.MaxWidth = 1000" \
-        "    \$tb2.Margin = '0,0,0,24'" \
-        "" \
-        "    \$tb3 = New-Object System.Windows.Controls.TextBlock" \
-        "    \$tb3.Text = 'Ctrl+C, Esc, or click to dismiss'" \
-        "    \$tb3.FontSize = 18" \
-        "    \$tb3.HorizontalAlignment = 'Center'" \
-        "    \$tb3.Foreground = [System.Windows.Media.Brushes]::LightGray" \
-        "" \
-        "    [void]\$stack.Children.Add(\$icon)" \
-        "    [void]\$stack.Children.Add(\$tb1)" \
-        "    [void]\$stack.Children.Add(\$tb2)" \
-        "    [void]\$stack.Children.Add(\$tb3)" \
-        "    [void]\$grid.Children.Add(\$stack)" \
-        "    \$window.Content = \$grid" \
-        "" \
-        "    function Close-OverlayIfDismissKey {" \
-        "        param(\$windowRef, \$e)" \
-        "        \$ctrl = ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control) -ne 0" \
-        "        if ((\$ctrl -and \$e.Key -eq [System.Windows.Input.Key]::C) -or (\$e.Key -eq [System.Windows.Input.Key]::Escape)) {" \
-        "            \$e.Handled = \$true" \
-        "            \$windowRef.Close()" \
-        "        }" \
-        "    }" \
-        "" \
-        "    # Focus is the hard part here. Clicking already proves the window exists;" \
-        "    # repeated Activate/Focus attempts improve the odds that keyboard events" \
-        "    # start reaching the overlay without an initial click." \
-        "    \$focusAction = {" \
-        "        try {" \
-        "            \$window.Activate() | Out-Null" \
-        "            [System.Windows.Input.FocusManager]::SetFocusedElement(\$window, \$grid)" \
-        "            \$window.Focus() | Out-Null" \
-        "            \$grid.Focus() | Out-Null" \
-        "            [System.Windows.Input.Keyboard]::Focus(\$grid) | Out-Null" \
-        "        } catch {}" \
-        "    }" \
-        "" \
-        "    \$window.Add_ContentRendered({" \
-        "        param(\$sender, \$e)" \
-        "        & \$focusAction" \
-        "" \
-        "        \$focusTimer = New-Object System.Windows.Threading.DispatcherTimer" \
-        "        \$focusTimer.Interval = [TimeSpan]::FromMilliseconds(250)" \
-        "        \$script:focusAttempts = 0" \
-        "        \$focusTimer.Add_Tick({" \
-        "            param(\$tickSender, \$tickEventArgs)" \
-        "            & \$focusAction" \
-        "            \$script:focusAttempts++" \
-        "            if (\$script:focusAttempts -ge 8 -and \$null -ne \$tickSender) {" \
-        "                \$tickSender.Stop()" \
-        "            }" \
-        "        })" \
-        "        \$focusTimer.Start()" \
-        "    })" \
-        "" \
-        "    \$window.Add_PreviewKeyDown({" \
-        "        param(\$sender, \$e)" \
-        "        Close-OverlayIfDismissKey \$window \$e" \
-        "    })" \
-        "" \
-        "    \$grid.Add_PreviewKeyDown({" \
-        "        param(\$sender, \$e)" \
-        "        Close-OverlayIfDismissKey \$window \$e" \
-        "    })" \
-        "" \
-        "    \$window.Add_MouseLeftButtonDown({" \
-        "        \$window.Close()" \
-        "    })" \
-        "" \
-        "    \$app = New-Object System.Windows.Application" \
-        "    \$app.ShutdownMode = 'OnMainWindowClose'" \
-        "    [void]\$app.Run(\$window)" \
-        "}" \
-        "catch {" \
-        "    [Console]::Error.WriteLine('overlay error: ' + \$_.Exception.Message)" \
-        "    exit 1" \
-        "}"
+    set -l ps1 "$state_dir/overlay.generated.ps1"
 
-    set -l rendered_lines
-    for line in $ps_lines
-        set line (string replace -a '__TITLE__' "$ps_title" -- "$line")
-        set line (string replace -a '__MSG__' "$ps_msg" -- "$line")
-        set -a rendered_lines "$line"
-    end
-
+    # Windows PowerShell handles UTF-8 with BOM more reliably for non-ASCII content.
     printf '\xEF\xBB\xBF' >"$ps1"
-    printf '%s\n' $rendered_lines >>"$ps1"
+    sed \
+        -e "s|__POMODORO_OVERLAY_TITLE__|$ps_title|g" \
+        -e "s|__POMODORO_OVERLAY_MESSAGE__|$ps_msg|g" \
+        -e "s|__POMODORO_OVERLAY_DISMISS_KEY__|$dismiss_key|g" \
+        "$template" >>"$ps1"
 
     "$ps" -NoProfile -ExecutionPolicy Bypass -STA -File "$ps1" >>"$log_file" 2>&1 &
     set -l launch_status $status
 
     if test $launch_status -ne 0
-        echo "warning: failed to launch WSL overlay powershell process" >&2
+        echo "warning: failed to launch WSL multi-screen overlay powershell process" >&2
         return 1
     end
 
@@ -318,8 +202,8 @@ function __pomodoro_notify_toast_wsl --description 'Send a Windows toast notific
         '$template = [Windows.UI.Notifications.ToastTemplateType]::ToastText02' \
         '$xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($template)' \
         '$text = $xml.GetElementsByTagName("text")' \
-        '[void]$text.Item(0).AppendChild($xml.CreateTextNode("__TITLE__"))' \
-        '[void]$text.Item(1).AppendChild($xml.CreateTextNode("__MSG__"))' \
+        '[void]$text.Item(0).AppendChild($xml.CreateTextNode("__POMODORO_OVERLAY_TITLE__"))' \
+        '[void]$text.Item(1).AppendChild($xml.CreateTextNode("__POMODORO_OVERLAY_MSG__"))' \
         '$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)' \
         '[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("PowerShell").Show($toast)' \
     )

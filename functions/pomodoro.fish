@@ -466,7 +466,7 @@ function __pomodoro_stop --description 'Pause the current session without cleari
     set -l pomodoro_index $state[9]
 
     if test "$run_state" = paused
-        echo "⏸ Already paused"
+        echo "⏸  Already paused"
         return 0
     end
 
@@ -635,7 +635,7 @@ function __pomodoro_status --description 'Show detailed session status with icon
 
     if test $state_status -ne 0
         printf "%s %s\n" \
-            (__pomodoro_paint brblack "○") \
+            (__pomodoro_paint brblack "○ ") \
             (__pomodoro_paint brblack "No active session")
         return 0
     end
@@ -661,7 +661,6 @@ function __pomodoro_status --description 'Show detailed session status with icon
         end
     end
 
-    set -l backend (__pomodoro_detect_backend)
     set -l phase_label (__pomodoro_phase_label "$mode")
     set -l position_label (__pomodoro_position_label "$mode" "$pomodoro_index" "$cycle_pomodoros")
     set -l next_label (__pomodoro_next_label "$mode" "$pomodoro_index" "$cycle_pomodoros")
@@ -682,15 +681,12 @@ function __pomodoro_status --description 'Show detailed session status with icon
         (__pomodoro_paint brblack "remaining")
 
     printf "%s %s  %s %s  %s %s\n" \
-        (__pomodoro_paint brblack "↳") \
-        (__pomodoro_paint brblack "next:") \
-        (__pomodoro_paint cyan "$next_label") \
-        (__pomodoro_paint brblack "|") \
-        (__pomodoro_paint brblack "backend:") \
-        (__pomodoro_paint brmagenta "$backend")
+        (__pomodoro_paint brblack " ↳") \
+        (__pomodoro_paint brblack " next:   ") \
+        (__pomodoro_paint cyan (string upper "$next_label"))
 
-    printf "%s %s  %s %s min  %s %s min  %s %s min  %s %s\n" \
-        (__pomodoro_paint brblack "⚙") \
+    printf "%s %s\n  - %s %s min\n  - %s %s min\n  - %s %s min\n  - %s %s\n" \
+        (__pomodoro_paint brblack "⚙ ") \
         (__pomodoro_paint brblack "config") \
         (__pomodoro_paint red "work") \
         (__pomodoro_paint red "$work") \
@@ -806,5 +802,3 @@ complete -c pomodoro -n "__fish_seen_subcommand_from start reset restart; and __
     -x -d "Long-break duration in minutes"
 complete -c pomodoro -n "__fish_seen_subcommand_from start reset restart; and __fish_is_nth_token 5" \
     -x -d "Number of work sessions per cycle"
-
-alias p="pomodoro"
