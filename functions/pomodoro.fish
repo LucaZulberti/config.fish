@@ -373,194 +373,11 @@ function __pomodoro_next_label --description 'Return a human-readable label for 
     end
 end
 
-function __pomodoro_start --description 'Start a new session or resume a paused one'
-    set -l state (__pomodoro_read_state 2>/dev/null)
-    set -l state_status $status
 
-    # Resume only when:
-    # - no explicit arguments were provided
-    # - a valid state exists
-    # - the session is paused
-    if test (count $argv) -eq 0; and test $state_status -eq 0; and test "$state[1]" = paused
-        set -l mode $state[2]
-        set -l remaining $state[4]
-        set -l work $state[5]
-        set -l short_break $state[6]
-        set -l long_break $state[7]
-        set -l cycle_pomodoros $state[8]
-        set -l pomodoro_index $state[9]
-
-        set -l now_epoch (date +%s)
-        set -l end_epoch (math "$now_epoch + $remaining")
-
-        __pomodoro_write_state running "$mode" "$end_epoch" 0 "$work" "$short_break" "$long_break" "$cycle_pomodoros" "$pomodoro_index"
-
-        if not __pomodoro_ensure_running
-            __pomodoro_write_state paused "$mode" 0 "$remaining" "$work" "$short_break" "$long_break" "$cycle_pomodoros" "$pomodoro_index"
-            return 1
-        end
-
-        echo "▶ Resumed — "(__pomodoro_phase_label "$mode")" | "(__pomodoro_position_label "$mode" "$pomodoro_index" "$cycle_pomodoros")
-        return 0
-    end
-
-    # If already running and no arguments were provided, keep behavior non-destructive.
-    if test (count $argv) -eq 0; and test $state_status -eq 0; and test "$state[1]" = running
-        __pomodoro_status
-        return 0
-    end
-
-    set -l work_min $argv[1]
-    set -l short_break_min $argv[2]
-    set -l long_break_min $argv[3]
-    set -l cycle_pomodoros $argv[4]
-
-    if test -z "$work_min"
-        set work_min (__pomodoro_default_work_min)
-    end
-    if test -z "$short_break_min"
-        set short_break_min (__pomodoro_default_short_break_min)
-    end
-    if test -z "$long_break_min"
-        set long_break_min (__pomodoro_default_long_break_min)
-    end
-    if test -z "$cycle_pomodoros"
-        set cycle_pomodoros (__pomodoro_default_cycle_pomodoros)
-    end
-
-    __pomodoro_validate_positive_int work "$work_min"; or return 1
-    __pomodoro_validate_positive_int short_break "$short_break_min"; or return 1
-    __pomodoro_validate_positive_int long_break "$long_break_min"; or return 1
-    __pomodoro_validate_positive_int cycle_pomodoros "$cycle_pomodoros"; or return 1
-
-    set -l now_epoch (date +%s)
-    set -l end_epoch (math "$now_epoch + $work_min * 60")
-
-    __pomodoro_write_state running work "$end_epoch" 0 "$work_min" "$short_break_min" "$long_break_min" "$cycle_pomodoros" 1
-
-    if not __pomodoro_ensure_running
-        rm -f (__pomodoro_statefile)
-        return 1
-    end
-
-    echo "🍅 Started — work $work_min min | short $short_break_min min | long $long_break_min min | cycle $cycle_pomodoros"
-end
-
-function __pomodoro_stop --description 'Pause the current session without clearing it'
-    set -l state (__pomodoro_read_state 2>/dev/null)
-    set -l state_status $status
-
-    if test $state_status -ne 0
-        echo "No active session"
-        return 0
-    end
-
-    set -l run_state $state[1]
-    set -l mode $state[2]
-    set -l end $state[3]
-    set -l remaining $state[4]
-    set -l work $state[5]
-    set -l short_break $state[6]
-    set -l long_break $state[7]
-    set -l cycle_pomodoros $state[8]
-    set -l pomodoro_index $state[9]
-
-    if test "$run_state" = paused
-        echo "⏸  Already paused"
-        return 0
-    end
-
-    set -l now_epoch (date +%s)
-    set -l remaining_sec (math "$end - $now_epoch")
-    if test "$remaining_sec" -lt 0
-        set remaining_sec 0
-    end
-
-    __pomodoro_write_state paused "$mode" 0 "$remaining_sec" "$work" "$short_break" "$long_break" "$cycle_pomodoros" "$pomodoro_index"
-    echo "⏸ Paused — "(__pomodoro_phase_label "$mode")" | "(__pomodoro_position_label "$mode" "$pomodoro_index" "$cycle_pomodoros")
-end
-
-function __pomodoro_reset --description 'Restart from pomodoro 1 using either current or provided configuration'
-    set -l existing_state (__pomodoro_read_state 2>/dev/null)
-    set -l existing_state_status $status
-
-    set -l work_min $argv[1]
-    set -l short_break_min $argv[2]
-    set -l long_break_min $argv[3]
-    set -l cycle_pomodoros $argv[4]
-
-    if test -z "$work_min"
-        if test $existing_state_status -eq 0
-            set work_min $existing_state[5]
-        else
-            set work_min (__pomodoro_default_work_min)
-        end
-    end
-
-    if test -z "$short_break_min"
-        if test $existing_state_status -eq 0
-            set short_break_min $existing_state[6]
-        else
-            set short_break_min (__pomodoro_default_short_break_min)
-        end
-    end
-
-    if test -z "$long_break_min"
-        if test $existing_state_status -eq 0
-            set long_break_min $existing_state[7]
-        else
-            set long_break_min (__pomodoro_default_long_break_min)
-        end
-    end
-
-    if test -z "$cycle_pomodoros"
-        if test $existing_state_status -eq 0
-            set cycle_pomodoros $existing_state[8]
-        else
-            set cycle_pomodoros (__pomodoro_default_cycle_pomodoros)
-        end
-    end
-
-    __pomodoro_validate_positive_int work "$work_min"; or return 1
-    __pomodoro_validate_positive_int short_break "$short_break_min"; or return 1
-    __pomodoro_validate_positive_int long_break "$long_break_min"; or return 1
-    __pomodoro_validate_positive_int cycle_pomodoros "$cycle_pomodoros"; or return 1
-
-    set -l now_epoch (date +%s)
-    set -l end_epoch (math "$now_epoch + $work_min * 60")
-
-    __pomodoro_write_state running work "$end_epoch" 0 "$work_min" "$short_break_min" "$long_break_min" "$cycle_pomodoros" 1
-
-    if not __pomodoro_ensure_running
-        rm -f (__pomodoro_statefile)
-        return 1
-    end
-
-    echo "🔄 Reset — restarted from pomodoro 1/$cycle_pomodoros"
-end
-
-function __pomodoro_clear --description 'Fully interrupt the current session and remove all persisted Pomodoro state'
-    # "clear" is intentionally stronger than:
-    # - stop: pause and keep the session resumable
-    # - reset: restart from the first pomodoro of the cycle
-    #
-    # Here we want a hard interruption: backend stopped, state removed,
-    # no future resume possible.
-    __pomodoro_interrupt_backend
-    rm -rf -- (__pomodoro_state_dir)
-    echo "🧹 Cleared — session interrupted and state removed"
-end
 
 function __pomodoro_use_color --description 'Return success if colored output should be used'
-    if not isatty stdout
-        return 1
-    end
-
-    if set -q NO_COLOR
-        return 1
-    end
-
-    return 0
+    set -q __pomodoro_color_enabled
+    and test "$__pomodoro_color_enabled" = 1
 end
 
 function __pomodoro_paint --description 'Print text with color when enabled'
@@ -629,6 +446,202 @@ function __pomodoro_mode_color --description 'Return the preferred color for the
     end
 end
 
+function __pomodoro_start --description 'Start a new session or resume a paused one'
+    set -l state (__pomodoro_read_state 2>/dev/null)
+    set -l state_status $status
+
+    # Resume only when:
+    # - no explicit arguments were provided
+    # - a valid state exists
+    # - the session is paused
+    if test (count $argv) -eq 0; and test $state_status -eq 0; and test "$state[1]" = paused
+        set -l mode $state[2]
+        set -l remaining $state[4]
+        set -l work $state[5]
+        set -l short_break $state[6]
+        set -l long_break $state[7]
+        set -l cycle_pomodoros $state[8]
+        set -l pomodoro_index $state[9]
+
+        set -l now_epoch (date +%s)
+        set -l end_epoch (math "$now_epoch + $remaining")
+
+        __pomodoro_write_state running "$mode" "$end_epoch" 0 "$work" "$short_break" "$long_break" "$cycle_pomodoros" "$pomodoro_index"
+
+        if not __pomodoro_ensure_running
+            __pomodoro_write_state paused "$mode" 0 "$remaining" "$work" "$short_break" "$long_break" "$cycle_pomodoros" "$pomodoro_index"
+            return 1
+        end
+
+        printf "%s - %s\n" \
+            (__pomodoro_paint white "▶ Resumed") \
+            (__pomodoro_paint cyan (string upper (__pomodoro_phase_label "$mode"))" | "(__pomodoro_position_label "$mode" "$pomodoro_index" "$cycle_pomodoros"))
+        return 0
+    end
+
+    # If already running and no arguments were provided, keep behavior non-destructive.
+    if test (count $argv) -eq 0; and test $state_status -eq 0; and test "$state[1]" = running
+        __pomodoro_status
+        return 0
+    end
+
+    set -l work_min $argv[1]
+    set -l short_break_min $argv[2]
+    set -l long_break_min $argv[3]
+    set -l cycle_pomodoros $argv[4]
+
+    if test -z "$work_min"
+        set work_min (__pomodoro_default_work_min)
+    end
+    if test -z "$short_break_min"
+        set short_break_min (__pomodoro_default_short_break_min)
+    end
+    if test -z "$long_break_min"
+        set long_break_min (__pomodoro_default_long_break_min)
+    end
+    if test -z "$cycle_pomodoros"
+        set cycle_pomodoros (__pomodoro_default_cycle_pomodoros)
+    end
+
+    __pomodoro_validate_positive_int work "$work_min"; or return 1
+    __pomodoro_validate_positive_int short_break "$short_break_min"; or return 1
+    __pomodoro_validate_positive_int long_break "$long_break_min"; or return 1
+    __pomodoro_validate_positive_int cycle_pomodoros "$cycle_pomodoros"; or return 1
+
+    set -l now_epoch (date +%s)
+    set -l end_epoch (math "$now_epoch + $work_min * 60")
+
+    __pomodoro_write_state running work "$end_epoch" 0 "$work_min" "$short_break_min" "$long_break_min" "$cycle_pomodoros" 1
+
+    if not __pomodoro_ensure_running
+        rm -f (__pomodoro_statefile)
+        return 1
+    end
+
+    printf "%s\n  - %s %s min\n  - %s %s min\n  - %s %s min\n  - %s %s\n" \
+        (__pomodoro_paint white "🍅 Started") \
+        (__pomodoro_paint red "work") \
+        (__pomodoro_paint red "$work") \
+        (__pomodoro_paint cyan "short") \
+        (__pomodoro_paint cyan "$short_break_min") \
+        (__pomodoro_paint magenta "long") \
+        (__pomodoro_paint magenta "$long_break_min") \
+        (__pomodoro_paint yellow "cycle") \
+        (__pomodoro_paint yellow "$cycle_pomodoros")
+end
+
+function __pomodoro_stop --description 'Pause the current session without clearing it'
+    set -l state (__pomodoro_read_state 2>/dev/null)
+    set -l state_status $status
+
+    if test $state_status -ne 0
+        echo "No active session"
+        return 0
+    end
+
+    set -l run_state $state[1]
+    set -l mode $state[2]
+    set -l end $state[3]
+    set -l remaining $state[4]
+    set -l work $state[5]
+    set -l short_break $state[6]
+    set -l long_break $state[7]
+    set -l cycle_pomodoros $state[8]
+    set -l pomodoro_index $state[9]
+
+    if test "$run_state" = paused
+        echo "⏸  Already paused"
+        return 0
+    end
+
+    set -l now_epoch (date +%s)
+    set -l remaining_sec (math "$end - $now_epoch")
+    if test "$remaining_sec" -lt 0
+        set remaining_sec 0
+    end
+
+    __pomodoro_write_state paused "$mode" 0 "$remaining_sec" "$work" "$short_break" "$long_break" "$cycle_pomodoros" "$pomodoro_index"
+
+    printf "%s - %s\n" \
+        (__pomodoro_paint white "⏸  Paused") \
+        (__pomodoro_paint yellow (string upper (__pomodoro_phase_label "$mode"))" | "(__pomodoro_position_label "$mode" "$pomodoro_index" "$cycle_pomodoros"))
+end
+
+function __pomodoro_reset --description 'Restart from pomodoro 1 using either current or provided configuration'
+    set -l existing_state (__pomodoro_read_state 2>/dev/null)
+    set -l existing_state_status $status
+
+    set -l work_min $argv[1]
+    set -l short_break_min $argv[2]
+    set -l long_break_min $argv[3]
+    set -l cycle_pomodoros $argv[4]
+
+    if test -z "$work_min"
+        if test $existing_state_status -eq 0
+            set work_min $existing_state[5]
+        else
+            set work_min (__pomodoro_default_work_min)
+        end
+    end
+
+    if test -z "$short_break_min"
+        if test $existing_state_status -eq 0
+            set short_break_min $existing_state[6]
+        else
+            set short_break_min (__pomodoro_default_short_break_min)
+        end
+    end
+
+    if test -z "$long_break_min"
+        if test $existing_state_status -eq 0
+            set long_break_min $existing_state[7]
+        else
+            set long_break_min (__pomodoro_default_long_break_min)
+        end
+    end
+
+    if test -z "$cycle_pomodoros"
+        if test $existing_state_status -eq 0
+            set cycle_pomodoros $existing_state[8]
+        else
+            set cycle_pomodoros (__pomodoro_default_cycle_pomodoros)
+        end
+    end
+
+    __pomodoro_validate_positive_int work "$work_min"; or return 1
+    __pomodoro_validate_positive_int short_break "$short_break_min"; or return 1
+    __pomodoro_validate_positive_int long_break "$long_break_min"; or return 1
+    __pomodoro_validate_positive_int cycle_pomodoros "$cycle_pomodoros"; or return 1
+
+    set -l now_epoch (date +%s)
+    set -l end_epoch (math "$now_epoch + $work_min * 60")
+
+    __pomodoro_write_state running work "$end_epoch" 0 "$work_min" "$short_break_min" "$long_break_min" "$cycle_pomodoros" 1
+
+    if not __pomodoro_ensure_running
+        rm -f (__pomodoro_statefile)
+        return 1
+    end
+
+    printf "%s - %s\n" \
+        (__pomodoro_paint white "🔄 Reset") \
+        (__pomodoro_paint magenta "restarted from pomodoro 1/$cycle_pomodoros")
+end
+
+function __pomodoro_clear --description 'Fully interrupt the current session and remove all persisted Pomodoro state'
+    # "clear" is intentionally stronger than:
+    # - stop: pause and keep the session resumable
+    # - reset: restart from the first pomodoro of the cycle
+    #
+    # Here we want a hard interruption: backend stopped, state removed,
+    # no future resume possible.
+    __pomodoro_interrupt_backend
+    rm -rf -- (__pomodoro_state_dir)
+    printf "%s - %s\n" \
+        (__pomodoro_paint white "🧹 Cleared") \
+        (__pomodoro_paint red "session interrupted and state removed")
+end
+
 function __pomodoro_status --description 'Show detailed session status with icons and colors'
     set -l state (__pomodoro_read_state 2>/dev/null)
     set -l state_status $status
@@ -683,11 +696,11 @@ function __pomodoro_status --description 'Show detailed session status with icon
     printf "%s %s  %s %s  %s %s\n" \
         (__pomodoro_paint brblack " ↳") \
         (__pomodoro_paint brblack " next:   ") \
-        (__pomodoro_paint cyan (string upper "$next_label"))
+        (__pomodoro_paint brcyan (string upper "$next_label"))
 
-    printf "%s %s\n  - %s %s min\n  - %s %s min\n  - %s %s min\n  - %s %s\n" \
+    printf "%s %s     %s %s min   %s %s min   %s %s min   %s %s\n" \
         (__pomodoro_paint brblack "⚙ ") \
-        (__pomodoro_paint brblack "config") \
+        (__pomodoro_paint white "config") \
         (__pomodoro_paint red "work") \
         (__pomodoro_paint red "$work") \
         (__pomodoro_paint cyan "short") \
@@ -714,10 +727,17 @@ function __pomodoro_paths --description 'Print all resolved paths and the detect
 end
 
 function pomodoro --description 'CLI frontend for starting, pausing, resetting, clearing, and inspecting the Pomodoro timer'
+    set -g __pomodoro_color_enabled 0
+    if isatty 1; and not set -q NO_COLOR
+        set -g __pomodoro_color_enabled 1
+    end
+
     if test (count $argv) -eq 0
         __pomodoro_usage
         return 0
     end
+
+    set -l ret 0
 
     switch $argv[1]
         case start
@@ -757,8 +777,12 @@ function pomodoro --description 'CLI frontend for starting, pausing, resetting, 
             echo "error: unknown subcommand '$argv[1]'" >&2
             echo >&2
             __pomodoro_usage >&2
-            return 1
+            set -l ret 1
+            set -e __pomodoro_color_enabled
     end
+
+    set -e __pomodoro_color_enabled
+    return $ret
 end
 
 function __pomodoro_usage --description 'Print command usage help'
