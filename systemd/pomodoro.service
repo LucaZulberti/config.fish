@@ -3,6 +3,10 @@ Description=Pomodoro timer
 
 [Service]
 Type=simple
+WorkingDirectory=%h
+Environment=HOME=%h
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/mnt/c/Windows/System32:/mnt/c/Windows/System32/WindowsPowerShell/v1.0
+PassEnvironment=WSL_INTEROP WSL_DISTRO_NAME WSLENV
 ExecStart=/home/zulberti/.config/fish/bin/pomodoro.fish
 Restart=on-failure
 RestartSec=3

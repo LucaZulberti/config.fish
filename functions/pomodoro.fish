@@ -3,14 +3,22 @@
 #
 # Fish is intentionally kept as a thin CLI frontend only.
 # The long-running timer must be supervised by a real service manager:
-#   - Linux:  systemd --user
-#   - macOS:  launchd LaunchAgent
+#   - Linux / WSL:  systemd --user
+#   - macOS:        launchd LaunchAgent
 #
 # This avoids the usual "daemonize from shell" problems:
 #   - child process tied to the TTY/session
 #   - fragile PID tracking
 #   - different environment between interactive and non-interactive shells
 #   - background jobs dying at logout
+#
+# Runtime/state files live under XDG state:
+#   - $XDG_STATE_HOME/pomodoro
+#   - fallback: ~/.local/state/pomodoro
+#
+# Persistent downloaded assets live under XDG data:
+#   - $XDG_DATA_HOME/pomodoro
+#   - fallback: ~/.local/share/pomodoro
 #
 # Optional override:
 #   set -gx POMODORO_DAEMON_PATH ~/.config/fish/bin/pomodoro.fish
@@ -27,6 +35,38 @@ function __pomodoro_state_dir --description 'Return the directory used for persi
         echo "$XDG_STATE_HOME/pomodoro"
     else
         echo ~/.local/state/pomodoro
+    end
+end
+
+function __pomodoro_data_dir --description 'Return the directory used for persistent Pomodoro data assets'
+    if set -q XDG_DATA_HOME; and test -n "$XDG_DATA_HOME"
+        echo "$XDG_DATA_HOME/pomodoro"
+    else
+        echo ~/.local/share/pomodoro
+    end
+end
+
+function __pomodoro_webview2_dir --description 'Return the local directory used for WebView2 SDK DLLs'
+    echo (__pomodoro_data_dir)/webview2
+end
+
+function __pomodoro_host_kind --description 'Return the normalized host kind: Linux, Darwin, or WSL'
+    # WSL must be detected before generic Linux because uname still reports Linux.
+    if test -f /proc/version; and string match -qi '*microsoft*' (cat /proc/version)
+        echo WSL
+        return 0
+    end
+
+    switch (uname)
+        case Darwin
+            echo Darwin
+        case Linux
+            echo Linux
+        case '*'
+            # The frontend is only expected to run on Darwin, Linux, or WSL.
+            # Fall back to the raw uname value for easier diagnostics if that
+            # assumption is violated.
+            uname
     end
 end
 
@@ -60,6 +100,145 @@ end
 
 function __pomodoro_launchd_plist_path --description 'Return the expected path of the LaunchAgent plist'
     echo ~/Library/LaunchAgents/(__pomodoro_launchd_label).plist
+end
+
+function __pomodoro_windows_localappdata_dir --description 'Return the Windows LocalAppData directory as a WSL path'
+    if not command -q powershell.exe
+        echo "error: powershell.exe not found" >&2
+        return 1
+    end
+
+    if not command -q wslpath
+        echo "error: wslpath not found" >&2
+        return 1
+    end
+
+    # Ask Windows directly for the current user LocalAppData path, then convert
+    # it to a WSL path so Fish can create directories and copy files there.
+    set -l win_localappdata (powershell.exe -NoProfile -Command "[Environment]::GetFolderPath('LocalApplicationData')" | string trim)
+
+    if test -z "$win_localappdata"
+        echo "error: failed to resolve Windows LocalAppData path" >&2
+        return 1
+    end
+
+    wslpath -u "$win_localappdata"
+end
+
+function __pomodoro_install_webview2 --description 'Download and extract WebView2 SDK DLLs under the current Windows user LocalAppData directory'
+    set -l wv2_version "1.0.3912.50"
+    if test (count $argv) -ge 1; and test -n "$argv[1]"
+        set wv2_version "$argv[1]"
+    end
+
+    set -l package_id "Microsoft.Web.WebView2"
+    set -l package_id_lower "microsoft.web.webview2"
+
+    set -l windows_localappdata (__pomodoro_windows_localappdata_dir); or return 1
+    set -l target_dir "$windows_localappdata/pomodoro/webview2"
+
+    set -l tmp_dir (mktemp -d)
+    set -l pkg "$tmp_dir/$package_id.$wv2_version.nupkg"
+    set -l url "https://api.nuget.org/v3-flatcontainer/$package_id_lower/$wv2_version/$package_id_lower.$wv2_version.nupkg"
+
+    if not command -q curl
+        echo "error: curl not found" >&2
+        return 1
+    end
+
+    if not command -q unzip
+        echo "error: unzip not found" >&2
+        return 1
+    end
+
+    mkdir -p "$target_dir"; or begin
+        rm -rf "$tmp_dir"
+        return 1
+    end
+
+    echo "Downloading WebView2 SDK $wv2_version ..."
+    curl -fL --retry 3 --retry-delay 1 "$url" -o "$pkg"; or begin
+        rm -rf "$tmp_dir"
+        echo "error: failed to download package version $wv2_version" >&2
+        echo "       url: $url" >&2
+        return 1
+    end
+
+    unzip -tq "$pkg" >/dev/null 2>&1; or begin
+        rm -rf "$tmp_dir"
+        echo "error: downloaded file is not a valid .nupkg archive" >&2
+        echo "       requested version: $wv2_version" >&2
+        return 1
+    end
+
+    unzip -q "$pkg" -d "$tmp_dir/pkg"; or begin
+        rm -rf "$tmp_dir"
+        echo "error: failed to extract package" >&2
+        return 1
+    end
+
+    # Windows PowerShell 5.x runs on .NET Framework, so prefer the managed
+    # assemblies shipped for .NET Framework. Package layout changed over time,
+    # so probe known framework directories in order of preference.
+    set -l lib_dir
+    for candidate in \
+        "$tmp_dir/pkg/lib/net462" \
+        "$tmp_dir/pkg/lib/net461" \
+        "$tmp_dir/pkg/lib/net46" \
+        "$tmp_dir/pkg/lib/net45"
+        if test -f "$candidate/Microsoft.Web.WebView2.Core.dll"; and test -f "$candidate/Microsoft.Web.WebView2.WinForms.dll"
+            set lib_dir "$candidate"
+            break
+        end
+    end
+
+    if test -z "$lib_dir"
+        rm -rf "$tmp_dir"
+        echo "error: compatible WebView2 managed assemblies not found under pkg/lib" >&2
+        echo "       looked for: net462, net461, net46, net45" >&2
+        return 1
+    end
+
+    set -l core_dll "$lib_dir/Microsoft.Web.WebView2.Core.dll"
+    set -l forms_dll "$lib_dir/Microsoft.Web.WebView2.WinForms.dll"
+
+    cp -f "$core_dll" "$target_dir/"; or begin
+        rm -rf "$tmp_dir"
+        return 1
+    end
+
+    cp -f "$forms_dll" "$target_dir/"; or begin
+        rm -rf "$tmp_dir"
+        return 1
+    end
+
+    rm -rf "$tmp_dir"
+
+    echo "Installed from: $lib_dir"
+    echo "Installed to:"
+    echo "  $target_dir/Microsoft.Web.WebView2.Core.dll"
+    echo "  $target_dir/Microsoft.Web.WebView2.WinForms.dll"
+end
+
+function __pomodoro_install --description 'Install optional host-specific Pomodoro dependencies for the current host'
+    switch (__pomodoro_host_kind)
+        case WSL
+            # WSL needs the WebView2 SDK DLLs locally so the Windows overlay host
+            # can render browser-quality emoji and HTML/CSS content.
+            __pomodoro_install_webview2 $argv
+            return $status
+
+        case Linux Darwin
+            # Nothing is required yet on native Linux or macOS. Keep this as a
+            # no-op so the public install command can stay stable as features
+            # evolve over time.
+            echo "No optional install steps required on "(__pomodoro_host_kind)" yet."
+            return 0
+
+        case '*'
+            echo "error: unsupported host '"(__pomodoro_host_kind)"'" >&2
+            return 1
+    end
 end
 
 function __pomodoro_default_work_min --description 'Return default work duration in minutes'
@@ -230,8 +409,8 @@ function __pomodoro_read_state --description 'Read and validate the persisted Po
 end
 
 function __pomodoro_detect_backend --description 'Detect which execution backend is available on this host'
-    switch (uname)
-        case Linux
+    switch (__pomodoro_host_kind)
+        case Linux WSL
             if command -q systemctl; and test -f (__pomodoro_systemd_unit_path)
                 echo systemd
                 return 0
@@ -286,8 +465,8 @@ function __pomodoro_ensure_running --description 'Ensure that the daemon is runn
 
             echo "error: no service manager file installed." >&2
             echo "       install one of these first:" >&2
-            echo "       - Linux:   ~/.config/systemd/user/pomodoro.service" >&2
-            echo "       - macOS:   ~/Library/LaunchAgents/com.$USER.pomodoro.plist" >&2
+            echo "       - Linux / WSL: ~/.config/systemd/user/pomodoro.service" >&2
+            echo "       - macOS:       ~/Library/LaunchAgents/com.$USER.pomodoro.plist" >&2
             echo "       For debugging only, run the daemon manually in another shell:" >&2
             echo "       "(__pomodoro_daemon_path) >&2
             return 1
@@ -338,19 +517,6 @@ function __pomodoro_phase_label --description 'Return a human-readable label for
     end
 end
 
-function __pomodoro_position_label --description 'Return the cycle position label for the current phase'
-    set -l mode $argv[1]
-    set -l pomodoro_index $argv[2]
-    set -l cycle_pomodoros $argv[3]
-
-    switch "$mode"
-        case work
-            echo "pomodoro $pomodoro_index/$cycle_pomodoros"
-        case short_break long_break
-            echo "after pomodoro $pomodoro_index/$cycle_pomodoros"
-    end
-end
-
 function __pomodoro_next_label --description 'Return a human-readable label for the next phase'
     set -l mode $argv[1]
     set -l pomodoro_index $argv[2]
@@ -372,8 +538,6 @@ function __pomodoro_next_label --description 'Return a human-readable label for 
             echo "work 1/$cycle_pomodoros"
     end
 end
-
-
 
 function __pomodoro_use_color --description 'Return success if colored output should be used'
     set -q __pomodoro_color_enabled
@@ -403,7 +567,7 @@ function __pomodoro_run_state_icon --description 'Return an icon for run state'
         case running
             echo "▶"
         case paused
-            echo "⏸"
+            echo "󰏤"
         case '*'
             echo "•"
     end
@@ -412,7 +576,7 @@ end
 function __pomodoro_mode_icon --description 'Return an icon for the current phase'
     switch "$argv[1]"
         case work
-            echo "🍅"
+            echo "💼"
         case short_break
             echo "☕"
         case long_break
@@ -446,6 +610,51 @@ function __pomodoro_mode_color --description 'Return the preferred color for the
     end
 end
 
+function __pomodoro_repeat_symbol --description 'Repeat a symbol N times'
+    set -l symbol $argv[1]
+    set -l count_n $argv[2]
+
+    if test "$count_n" -le 0
+        return 0
+    end
+
+    for i in (seq "$count_n")
+        printf '%s' "$symbol"
+    end
+end
+
+function __pomodoro_progress_completed --description 'Return number of completed pomodoros in the current cycle context'
+    set -l mode $argv[1]
+    set -l pomodoro_index $argv[2]
+
+    switch "$mode"
+        case work
+            math "$pomodoro_index - 1"
+        case short_break long_break
+            echo "$pomodoro_index"
+    end
+end
+
+function __pomodoro_progress_icons --description 'Render cycle progress using filled and empty dots'
+    set -l mode $argv[1]
+    set -l pomodoro_index $argv[2]
+    set -l cycle_pomodoros $argv[3]
+
+    set -l completed (__pomodoro_progress_completed "$mode" "$pomodoro_index")
+    set -l remaining (math "$cycle_pomodoros - $completed")
+
+    set -l filled (__pomodoro_repeat_symbol '🔴' "$completed")
+    set -l empty (__pomodoro_repeat_symbol '◯ ' "$remaining")
+
+    if __pomodoro_use_color
+        printf '%s%s' \
+            (__pomodoro_paint red "$filled") \
+            (__pomodoro_paint brwhite "$empty")
+    else
+        printf '%s%s' "$filled" "$empty"
+    end
+end
+
 function __pomodoro_start --description 'Start a new session or resume a paused one'
     set -l state (__pomodoro_read_state 2>/dev/null)
     set -l state_status $status
@@ -473,9 +682,7 @@ function __pomodoro_start --description 'Start a new session or resume a paused 
             return 1
         end
 
-        printf "%s - %s\n" \
-            (__pomodoro_paint white "▶ Resumed") \
-            (__pomodoro_paint cyan (string upper (__pomodoro_phase_label "$mode"))" | "(__pomodoro_position_label "$mode" "$pomodoro_index" "$cycle_pomodoros"))
+        __pomodoro_status
         return 0
     end
 
@@ -518,15 +725,16 @@ function __pomodoro_start --description 'Start a new session or resume a paused 
         return 1
     end
 
-    printf "%s\n  - %s %s min\n  - %s %s min\n  - %s %s min\n  - %s %s\n" \
+    printf "%s - %s %s %s min  %s %s min  %s %s min  %s %s\n" \
         (__pomodoro_paint white "🍅 Started") \
+        (__pomodoro_paint brwhite "⚙️:") \
         (__pomodoro_paint red "work") \
-        (__pomodoro_paint red "$work") \
+        (__pomodoro_paint red "$work_min") \
         (__pomodoro_paint cyan "short") \
         (__pomodoro_paint cyan "$short_break_min") \
         (__pomodoro_paint magenta "long") \
         (__pomodoro_paint magenta "$long_break_min") \
-        (__pomodoro_paint yellow "cycle") \
+        (__pomodoro_paint yellow "cycles") \
         (__pomodoro_paint yellow "$cycle_pomodoros")
 end
 
@@ -542,7 +750,6 @@ function __pomodoro_stop --description 'Pause the current session without cleari
     set -l run_state $state[1]
     set -l mode $state[2]
     set -l end $state[3]
-    set -l remaining $state[4]
     set -l work $state[5]
     set -l short_break $state[6]
     set -l long_break $state[7]
@@ -550,7 +757,7 @@ function __pomodoro_stop --description 'Pause the current session without cleari
     set -l pomodoro_index $state[9]
 
     if test "$run_state" = paused
-        echo "⏸  Already paused"
+        printf "%s\n" (__pomodoro_paint normal "󰏤 Already Paused")
         return 0
     end
 
@@ -562,9 +769,7 @@ function __pomodoro_stop --description 'Pause the current session without cleari
 
     __pomodoro_write_state paused "$mode" 0 "$remaining_sec" "$work" "$short_break" "$long_break" "$cycle_pomodoros" "$pomodoro_index"
 
-    printf "%s - %s\n" \
-        (__pomodoro_paint white "⏸  Paused") \
-        (__pomodoro_paint yellow (string upper (__pomodoro_phase_label "$mode"))" | "(__pomodoro_position_label "$mode" "$pomodoro_index" "$cycle_pomodoros"))
+    __pomodoro_status
 end
 
 function __pomodoro_reset --description 'Restart from pomodoro 1 using either current or provided configuration'
@@ -624,7 +829,7 @@ function __pomodoro_reset --description 'Restart from pomodoro 1 using either cu
     end
 
     printf "%s - %s\n" \
-        (__pomodoro_paint white "🔄 Reset") \
+        (__pomodoro_paint normal "󰑓 Reset") \
         (__pomodoro_paint magenta "restarted from pomodoro 1/$cycle_pomodoros")
 end
 
@@ -638,7 +843,7 @@ function __pomodoro_clear --description 'Fully interrupt the current session and
     __pomodoro_interrupt_backend
     rm -rf -- (__pomodoro_state_dir)
     printf "%s - %s\n" \
-        (__pomodoro_paint white "🧹 Cleared") \
+        (__pomodoro_paint normal "🧹 Cleared") \
         (__pomodoro_paint red "session interrupted and state removed")
 end
 
@@ -648,9 +853,16 @@ function __pomodoro_status --description 'Show detailed session status with icon
 
     if test $state_status -ne 0
         printf "%s %s\n" \
-            (__pomodoro_paint brblack "○ ") \
-            (__pomodoro_paint brblack "No active session")
+            (__pomodoro_paint white "○ ") \
+            (__pomodoro_paint white "No active session")
         return 0
+    end
+
+    set -l log_all 0
+    if test (count $argv) -gt 0
+        if test "$argv[1]" = all
+            set log_all 1
+        end
     end
 
     set -l run_state $state[1]
@@ -675,9 +887,9 @@ function __pomodoro_status --description 'Show detailed session status with icon
     end
 
     set -l phase_label (__pomodoro_phase_label "$mode")
-    set -l position_label (__pomodoro_position_label "$mode" "$pomodoro_index" "$cycle_pomodoros")
     set -l next_label (__pomodoro_next_label "$mode" "$pomodoro_index" "$cycle_pomodoros")
     set -l remaining_label (__pomodoro_format_remaining "$remaining_sec")
+    set -l progress_icons (__pomodoro_progress_icons "$mode" "$pomodoro_index" "$cycle_pomodoros")
 
     set -l run_icon (__pomodoro_run_state_icon "$run_state")
     set -l mode_icon (__pomodoro_mode_icon "$mode")
@@ -689,55 +901,62 @@ function __pomodoro_status --description 'Show detailed session status with icon
         (__pomodoro_paint "$run_color" (string upper "$run_state")) \
         (__pomodoro_paint "$mode_color" "$mode_icon") \
         (__pomodoro_paint "$mode_color" (string upper "$phase_label")) \
-        (__pomodoro_paint blue "$position_label") \
-        (__pomodoro_paint brwhite "$remaining_label") \
-        (__pomodoro_paint brblack "remaining")
+        "$progress_icons" \
+        (__pomodoro_paint normal "$remaining_label") \
+        (__pomodoro_paint white "remaining")
 
-    printf "%s %s  %s %s  %s %s\n" \
-        (__pomodoro_paint brblack " ↳") \
-        (__pomodoro_paint brblack " next:   ") \
-        (__pomodoro_paint brcyan (string upper "$next_label"))
+    if test $log_all = 1
+        printf "%s %s  %s\n" \
+            (__pomodoro_paint brwhite " ↳") \
+            (__pomodoro_paint brwhite " next:") \
+            (__pomodoro_paint brwhite (string upper "$next_label"))
 
-    printf "%s %s     %s %s min   %s %s min   %s %s min   %s %s\n" \
-        (__pomodoro_paint brblack "⚙ ") \
-        (__pomodoro_paint white "config") \
-        (__pomodoro_paint red "work") \
-        (__pomodoro_paint red "$work") \
-        (__pomodoro_paint cyan "short") \
-        (__pomodoro_paint cyan "$short_break") \
-        (__pomodoro_paint magenta "long") \
-        (__pomodoro_paint magenta "$long_break") \
-        (__pomodoro_paint yellow "cycle") \
-        (__pomodoro_paint yellow "$cycle_pomodoros")
-end
-
-function __pomodoro_paths --description 'Print all resolved paths and the detected backend for troubleshooting'
-    echo "state dir:   "(__pomodoro_state_dir)
-    echo "state file:  "(__pomodoro_statefile)
-    echo "pid file:    "(__pomodoro_pidfile)
-    echo "daemon path: "(__pomodoro_daemon_path)
-    echo "backend:     "(__pomodoro_detect_backend)
-
-    switch (uname)
-        case Linux
-            echo "unit path:   "(__pomodoro_systemd_unit_path)
-        case Darwin
-            echo "plist path:  "(__pomodoro_launchd_plist_path)
+        printf "%s %s    %s %s min   %s %s min   %s %s min   %s %s\n" \
+            (__pomodoro_paint white "⚙ ") \
+            (__pomodoro_paint white "config:") \
+            (__pomodoro_paint red "work") \
+            (__pomodoro_paint red "$work") \
+            (__pomodoro_paint cyan "short") \
+            (__pomodoro_paint cyan "$short_break") \
+            (__pomodoro_paint magenta "long") \
+            (__pomodoro_paint magenta "$long_break") \
+            (__pomodoro_paint yellow "cycle") \
+            (__pomodoro_paint yellow "$cycle_pomodoros")
     end
 end
 
-function pomodoro --description 'CLI frontend for starting, pausing, resetting, clearing, and inspecting the Pomodoro timer'
+function __pomodoro_paths --description 'Print all resolved paths, host kind, and backend for troubleshooting'
+    set -l host_kind (__pomodoro_host_kind)
+    echo "data dir:   "(__pomodoro_data_dir)
+    echo "state dir:  "(__pomodoro_state_dir)
+    echo "state file: "(__pomodoro_statefile)
+    echo "pid file:   "(__pomodoro_pidfile)
+    echo "daemon:     "(__pomodoro_daemon_path)
+    echo "backend:    "(__pomodoro_detect_backend)
+
+    switch $host_kind
+        case Linux
+            echo "unit path:  "(__pomodoro_systemd_unit_path)
+        case Darwin
+            echo "plist path: "(__pomodoro_launchd_plist_path)
+        case WSL
+            echo "unit path:  "(__pomodoro_systemd_unit_path)
+            echo "webview2:   "(__pomodoro_webview2_dir)
+    end
+end
+
+function pomodoro --description 'CLI frontend for starting, pausing, resetting, clearing, installing host assets, and inspecting the Pomodoro timer'
     set -g __pomodoro_color_enabled 0
     if isatty 1; and not set -q NO_COLOR
         set -g __pomodoro_color_enabled 1
     end
 
     if test (count $argv) -eq 0
-        __pomodoro_usage
-        return 0
+        __pomodoro_status
+        set -l ret $status
+        set -e __pomodoro_color_enabled
+        return $ret
     end
-
-    set -l ret 0
 
     switch $argv[1]
         case start
@@ -753,19 +972,28 @@ function pomodoro --description 'CLI frontend for starting, pausing, resetting, 
             __pomodoro_clear
 
         case status
-            __pomodoro_status
+            __pomodoro_status $argv[2..-1]
 
         case daemon
             set -l daemon (__pomodoro_daemon_path)
 
             if not test -x "$daemon"
                 echo "error: daemon script not executable: $daemon" >&2
+                set -e __pomodoro_color_enabled
                 return 1
             end
 
             # Use the external command directly instead of calling a Fish function.
             # This keeps daemon execution independent from interactive shell state.
             command $daemon
+
+        case install
+            __pomodoro_install $argv[2..-1]
+
+        case install-webview2
+            # Keep the low-level subcommand as an explicit escape hatch, even if
+            # the public entry point is now `pomodoro install`.
+            __pomodoro_install_webview2 $argv[2..-1]
 
         case paths
             __pomodoro_paths
@@ -777,45 +1005,50 @@ function pomodoro --description 'CLI frontend for starting, pausing, resetting, 
             echo "error: unknown subcommand '$argv[1]'" >&2
             echo >&2
             __pomodoro_usage >&2
-            set -l ret 1
             set -e __pomodoro_color_enabled
+            return 1
     end
 
+    set -l ret $status
     set -e __pomodoro_color_enabled
     return $ret
 end
 
 function __pomodoro_usage --description 'Print command usage help'
     echo "Usage:"
+    echo "  pomodoro                              Show session status"
     echo "  pomodoro start [work_min] [short_break_min] [long_break_min] [cycle_pomodoros]"
-    echo "                                      Start a new session or resume a paused one"
-    echo "  pomodoro stop                       Pause the current session"
+    echo "                                       Start a new session or resume a paused one"
+    echo "  pomodoro stop                        Pause the current session"
     echo "  pomodoro reset [work_min] [short_break_min] [long_break_min] [cycle_pomodoros]"
-    echo "                                      Restart from pomodoro 1 of the cycle"
+    echo "                                       Restart from pomodoro 1 of the cycle"
     echo "  pomodoro restart [work_min] [short_break_min] [long_break_min] [cycle_pomodoros]"
-    echo "                                      Alias of reset"
-    echo "  pomodoro clear                      Interrupt the session and remove all state"
-    echo "  pomodoro status                     Show detailed session status"
-    echo "  pomodoro daemon                     Run the standalone daemon in foreground"
-    echo "  pomodoro paths                      Show resolved paths and backend"
+    echo "                                       Alias of reset"
+    echo "  pomodoro clear                       Interrupt the session and remove all state"
+    echo "  pomodoro status [all]                Show session status"
+    echo "  pomodoro install [webview2_version]  Install optional host assets (currently WSL only)"
+    echo "  pomodoro daemon                      Run the standalone daemon in foreground"
+    echo "  pomodoro paths                       Show resolved paths, host kind, and backend"
 end
 
 # Shell completions are explicit on purpose: more verbose, easier to debug.
-complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear daemon paths" \
+complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear install install-webview2 daemon paths" \
     -a start -d "Start a new Pomodoro session or resume a paused one"
-complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear daemon paths" \
+complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear install install-webview2 daemon paths" \
     -a stop -d "Pause the current session"
-complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear daemon paths" \
+complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear install install-webview2 daemon paths" \
     -a reset -d "Restart from pomodoro 1"
-complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear daemon paths" \
+complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear install install-webview2 daemon paths" \
     -a restart -d "Alias of reset"
-complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear daemon paths" \
+complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear install install-webview2 daemon paths" \
     -a clear -d "Interrupt session and remove all state"
-complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear daemon paths" \
+complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear install install-webview2 daemon paths" \
     -a status -d "Show detailed session status"
-complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear daemon paths" \
+complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear install install-webview2 daemon paths" \
+    -a install -d "Install optional host assets (currently WSL only)"
+complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear install install-webview2 daemon paths" \
     -a daemon -d "Run the standalone daemon in foreground"
-complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear daemon paths" \
+complete -c pomodoro -f -n "not __fish_seen_subcommand_from start stop status reset restart clear install install-webview2 daemon paths" \
     -a paths -d "Show resolved paths and backend"
 
 complete -c pomodoro -n "__fish_seen_subcommand_from start reset restart; and __fish_is_nth_token 2" \
@@ -826,3 +1059,7 @@ complete -c pomodoro -n "__fish_seen_subcommand_from start reset restart; and __
     -x -d "Long-break duration in minutes"
 complete -c pomodoro -n "__fish_seen_subcommand_from start reset restart; and __fish_is_nth_token 5" \
     -x -d "Number of work sessions per cycle"
+complete -c pomodoro -n "__fish_seen_subcommand_from install; and __fish_is_nth_token 2" \
+    -x -d "WebView2 SDK version to install on WSL"
+complete -c pomodoro -n "__fish_seen_subcommand_from install-webview2; and __fish_is_nth_token 2" \
+    -x -d "Explicit WebView2 SDK version"
